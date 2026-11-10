@@ -118,8 +118,10 @@ class EventRouter:
             case protocol.AudioDelta():
                 self._playback.write(base64.b64decode(event.delta))
             case protocol.SpeechStarted():
+                self._idle_pacer.speaking = True
                 await self._barge_in.trigger()
             case protocol.SpeechStopped():
+                self._idle_pacer.speaking = False
                 self._idle_pacer.touch()
             case protocol.ResponseCreated():
                 self._idle_pacer.busy = True

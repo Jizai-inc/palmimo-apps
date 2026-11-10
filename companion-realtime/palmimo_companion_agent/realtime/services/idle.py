@@ -39,6 +39,7 @@ class IdlePacer:
 
     def __init__(self) -> None:
         self.busy = False
+        self.speaking = False
         self._due = time.monotonic() + IDLE_MIN_SECONDS
 
     def touch(self) -> None:
@@ -46,8 +47,8 @@ class IdlePacer:
         self._due = time.monotonic() + random.uniform(IDLE_MIN_SECONDS, IDLE_MAX_SECONDS)
 
     def is_due(self) -> bool:
-        """Whether an idle tick should fire now: not mid-response, and past the due time."""
-        return not self.busy and time.monotonic() >= self._due
+        """Whether an idle tick should fire now: not mid-response or human speech, and past the due time."""
+        return not self.busy and not self.speaking and time.monotonic() >= self._due
 
 
 class IdleTicker:
