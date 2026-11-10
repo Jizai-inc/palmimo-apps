@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import signal
 import sys
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -24,6 +25,7 @@ from palmimo_companion_agent.realtime import settings as settings_module
 from palmimo_companion_agent.realtime.app import RealtimeSession
 from palmimo_companion_agent.realtime.bridge import ToolBridge
 from palmimo_companion_agent.realtime.log import EventLog
+from palmimo_companion_agent.realtime.protocol import Response
 from palmimo_companion_agent.realtime.services.audio import Playback
 from palmimo_companion_agent.realtime.services.base import Service
 from palmimo_companion_agent.realtime.services.frames import LiveFrame
@@ -42,8 +44,9 @@ class _Recorder:
         self.park: bool | None = None
 
     # ToolBridge
-    async def settle(self, timeout: float) -> None:
+    async def settle(self, timeout: float) -> bool:
         self.order.append("bridge.settle")
+        return True
 
     # Playback
     def close(self) -> None:
@@ -333,9 +336,9 @@ async def test_signal_handlers_are_removed_before_shutdown_runs() -> None:
     events: list[str] = []
 
     class _OrderRecorder(_Recorder):
-        async def settle(self, timeout: float) -> None:
+        async def settle(self, timeout: float) -> bool:
             events.append("bridge.settle")
-            await super().settle(timeout)
+            return await super().settle(timeout)
 
     recorder = _OrderRecorder()
     session = RealtimeSession(
@@ -404,3 +407,43 @@ async def test_bridge_settle_does_not_wait_forever_on_an_uncancellable_tool() ->
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await task
+
+
+async def test_shutdown_returns_without_disconnecting_while_sdk_worker_is_still_running(
+    fake_client: type, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started = asyncio.Event()
+    release = threading.Event()
+    event_loop = asyncio.get_running_loop()
+
+    def blocked_sleep() -> None:
+        event_loop.call_soon_threadsafe(started.set)
+        release.wait()
+
+    robot = Palmimo(driver=None)
+    monkeypatch.setattr(robot, "sleep", blocked_sleep)
+    bridge = ToolBridge(fake_client(), AgentToolSet(robot), Sleeping(), EventLog.open(None))
+    await bridge.handle(
+        Response(id="r", output=[{"type": "function_call", "name": "sleep", "arguments": "{}", "call_id": "sleep-1"}])
+    )
+    workers = list(bridge.tasks)
+    recorder = _Recorder()
+    session = _session(recorder, asleep=False)
+    session._bridge = bridge
+    monkeypatch.setattr(app_module, "_SETTLE_TIMEOUT_S", 0.01)
+    shutdown: asyncio.Task[None] | None = None
+    try:
+        await asyncio.wait_for(started.wait(), 1.0)
+        shutdown = asyncio.create_task(session._shutdown())
+        done, _ = await asyncio.wait([shutdown], timeout=0.2)
+        assert shutdown in done, "shutdown exceeded its tool settling deadline"
+        await shutdown
+        assert not release.is_set()
+        assert "disconnect" not in recorder.order
+        assert "wake" not in recorder.order
+        assert recorder.order == ["playback.close", "watch.aclose"]
+    finally:
+        release.set()
+        await asyncio.gather(*workers, return_exceptions=True)
+        if shutdown is not None:
+            await shutdown

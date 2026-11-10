@@ -40,7 +40,6 @@ Handles three failure modes a plan's function calls can hit mid-flight:
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import sys
 from collections.abc import Iterable
@@ -200,7 +199,7 @@ class ToolBridge:
             self._log.write("tool_call", name=call.name, call_id=call.call_id, interrupted=True, reason=reason)
             await self._client.send(ItemCreate.function_call_output(call.call_id, message))
 
-    async def settle(self, timeout: float) -> None:
+    async def settle(self, timeout: float) -> bool:
         """Cancel every plan-execution task and wait (bounded) for them to finish.
 
         Used by :class:`~.app.RealtimeSession`'s shutdown -- ``Palmimo.sleep()``/
@@ -208,13 +207,18 @@ class ToolBridge:
         cannot be shortened; waiting forever would hold the process past a
         service manager's stop timeout, which then kills it with the robot
         unparked.
+
+        Return False if workers are still running. They remain tracked in
+        :attr:`tasks`; the caller must not wake or disconnect the robot
+        while those workers can still access it.
         """
         tasks = list(self._tasks)
         for task in tasks:
             task.cancel()
-        if tasks:
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout)
+        if not tasks:
+            return True
+        _, pending = await asyncio.wait(tasks, timeout=timeout)
+        return not pending
 
 
 def _report_failure(task: asyncio.Task[None]) -> None:
