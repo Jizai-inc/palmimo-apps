@@ -512,3 +512,25 @@ def test_play_message_from_a_viewer_is_dropped(
         pilot.send_json({"move": "forward", "rotate": 0, "neck": {"pitch": 0.0, "yaw": 0.0}, "seq": 1})
         assert _wait_for(lambda: session.effective_input().move == "forward")
         assert session.effective_input().gesture is None
+
+
+@pytest.mark.parametrize("thread_stuck", [False, True])
+def test_lifespan_disconnects_after_settle_failure_only_when_thread_stopped(thread_stuck: bool) -> None:
+    class FaultingRobot(_FakeRobot):
+        def stop(self) -> None:
+            pass
+
+        def step(self) -> None:
+            raise OSError("servo write failed")
+
+    class StoppedLoop(RobotLoop):
+        def start(self) -> None:
+            pass
+
+    robot = FaultingRobot()
+    session = PilotSession()
+    loop = _StuckRobotLoop() if thread_stuck else StoppedLoop(cast(Palmimo, robot), session)
+    app = create_app(cast(Palmimo, robot), session, cast(RobotLoop, loop), VideoStream(None))
+    with TestClient(app):
+        pass
+    assert robot.disconnect_calls == (0 if thread_stuck else 1)

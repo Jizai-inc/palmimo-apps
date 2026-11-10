@@ -196,7 +196,7 @@ class RobotLoop:
         disconnected) from anywhere else.
 
         Returns:
-            bool: `True` if the loop stopped and settled; `False` if the
+            bool: `True` if the loop stopped (settle failures are logged); `False` if the
                 thread was still alive after `settle_timeout` and settling
                 was skipped.
         """
@@ -211,7 +211,10 @@ class RobotLoop:
                 )
                 return False
             self._thread = None
-        self._settle()
+        try:
+            self._settle()
+        except Exception:
+            _LOG.exception("robot settle failed after the control thread stopped")
         return True
 
     def _settle(self) -> None:
