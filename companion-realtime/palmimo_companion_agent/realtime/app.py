@@ -317,13 +317,20 @@ class RealtimeSession:
         wake-before-park step itself is :func:`_wake_and_disconnect`, shared
         with ``_run``'s own outer ``finally`` -- see its docstring.
         """
-        await self._bridge.settle(_SETTLE_TIMEOUT_S)
+        tools_stopped = await self._bridge.settle(_SETTLE_TIMEOUT_S)
         if self._reflexes is not None:
             await self._reflexes.settle(_SETTLE_TIMEOUT_S)
         self._playback.close()
         with contextlib.suppress(Exception):
             await self._watch.aclose()
-        await _wake_and_disconnect(self._palmimo, self._sleeping)
+        if tools_stopped:
+            await _wake_and_disconnect(self._palmimo, self._sleeping)
+        else:
+            print(
+                "!! tool workers still running; skipping robot wake/disconnect to avoid concurrent hardware access",
+                file=sys.stderr,
+                flush=True,
+            )
 
 
 async def _run(args: argparse.Namespace) -> int:

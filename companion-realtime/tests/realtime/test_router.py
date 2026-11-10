@@ -2,14 +2,25 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 
 from palmimo_companion_agent.realtime.log import EventLog
-from palmimo_companion_agent.realtime.protocol import ErrorEvent, Response, ResponseDone, SpeechStarted, Unknown
+from palmimo_companion_agent.realtime.protocol import (
+    ErrorEvent,
+    Response,
+    ResponseDone,
+    SpeechStarted,
+    SpeechStopped,
+    Unknown,
+)
+from palmimo_companion_agent.realtime.services import idle as idle_module
 from palmimo_companion_agent.realtime.services.audio import Playback
-from palmimo_companion_agent.realtime.services.idle import IdlePacer
+from palmimo_companion_agent.realtime.services.idle import IdlePacer, IdleTicker
 from palmimo_companion_agent.realtime.services.router import BargeIn, EventRouter, _SessionClosed
 from palmimo_companion_agent.realtime.state import Sleeping
 
@@ -153,3 +164,36 @@ async def test_the_socket_closing_after_some_events_still_raises_session_closed(
 
     with pytest.raises(_SessionClosed):
         await router.run()
+
+
+async def test_idle_responses_wait_until_human_speech_has_stopped(
+    fake_client: type, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = 0.0
+    monkeypatch.setattr(idle_module, "time", SimpleNamespace(monotonic=lambda: now))
+    monkeypatch.setattr(idle_module, "_TICK_PERIOD_S", 0.001)
+    client = fake_client()
+    playback = _playback(_Playback())
+    bridge = _Bridge()
+    pacer = IdlePacer()
+    sleeping = Sleeping()
+    log = EventLog.open(None)
+    router = EventRouter(client, playback, BargeIn(playback, bridge, pacer), bridge, pacer, sleeping, _Usage(), log)
+    ticker = asyncio.create_task(IdleTicker(client, pacer, sleeping, "idle", [], log).run())
+    try:
+        await router._dispatch(SpeechStarted())
+        await router._dispatch(ResponseDone(response=Response(id="cancelled", status="cancelled")))
+        now = 20.0
+        await asyncio.sleep(0.02)
+        assert client.sent == []
+        await router._dispatch(SpeechStopped())
+        await asyncio.sleep(0.02)
+        assert client.sent == []
+        now = 40.0
+        async with asyncio.timeout(1.0):
+            while not client.sent:
+                await asyncio.sleep(0.001)
+    finally:
+        ticker.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await ticker

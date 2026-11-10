@@ -349,6 +349,7 @@
   const stick = document.getElementById("neck-stick");
   const handle = document.getElementById("neck-stick-handle");
   let dragging = false;
+  let dragTouchId = null;
 
   function setHandlePosition(x, y) {
     const radius = stick.clientWidth / 2;
@@ -356,9 +357,8 @@
     handle.style.top = radius + y * radius + "px";
   }
 
-  function stickPointFromEvent(event) {
+  function stickPoint(point) {
     const rect = stick.getBoundingClientRect();
-    const point = event.touches ? event.touches[0] : event;
     const radius = rect.width / 2;
     let x = (point.clientX - rect.left - radius) / radius;
     let y = (point.clientY - rect.top - radius) / radius;
@@ -373,18 +373,31 @@
   if (stick && handle) {
     const onMove = function (event) {
       if (!dragging) return;
+      const touch = event.touches
+        ? Array.from(event.touches).find((item) => item.identifier === dragTouchId)
+        : dragTouchId === null ? event : null;
+      if (!touch) return;
       event.preventDefault();
-      const point = stickPointFromEvent(event);
+      const point = stickPoint(touch);
       neckYaw = point.x;
       neckPitch = point.y;
       setHandlePosition(point.x, point.y);
     };
     const onStart = function (event) {
+      if (dragging) return;
+      dragTouchId = event.changedTouches ? event.changedTouches[0].identifier : null;
       dragging = true;
       onMove(event);
     };
-    const onEnd = function () {
+    const onEnd = function (event) {
+      if (!dragging) return;
+      if (event.changedTouches) {
+        if (!Array.from(event.changedTouches).some((item) => item.identifier === dragTouchId)) return;
+      } else if (dragTouchId !== null) {
+        return;
+      }
       dragging = false;
+      dragTouchId = null;
       neckPitch = 0;
       neckYaw = 0;
       setHandlePosition(0, 0);
